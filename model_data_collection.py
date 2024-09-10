@@ -1,12 +1,13 @@
 import sys
 import os
 import time
+
+import neurokit2
 import serial
 import serial.tools.list_ports
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton, \
     QLineEdit, QComboBox, QListWidget, QMessageBox, QCheckBox, QInputDialog
-from neurokit2.signal.signal_phase import _signal_phase_binary, _signal_phase_prophase
 from pyqtgraph import PlotWidget
 import pyqtgraph as pg
 from collections import deque
@@ -15,16 +16,13 @@ from scipy import signal
 import logging
 from PyQt5.QtCore import QTimer
 from scipy.signal import find_peaks
-import pandas as pd
-# import neurokit2 as nk
-# 设置日志记录
+
 logging.basicConfig(level=logging.INFO)
 
 
 # Helper function to convert two's complement and scale
 def twos_complement_and_scale(raw_data, range_val):
     return (float(raw_data) / 32767.0) * range_val
-
 
 
 # FIR 低通滤波器设计
@@ -40,32 +38,7 @@ def design_fir_filter(cutoff_freq, sample_rate, num_taps):
 # 应用FIR滤波器
 def apply_fir_filter(data, taps):
     filtered_data = signal.lfilter(taps, 1.0, data)
-    return filtered_data[-1]  # 返回最新的滤波结果
-
-
-# def detect_breathing_phase(signal, sample_rate):
-#     smoothed_signal = np.array(signal[-1000:])
-#
-#     peaks, _ = find_peaks(smoothed_signal)  # 找到峰值（吸气结束，吐气开始）
-#     troughs, _ = find_peaks(-smoothed_signal)  # 找到谷值（吐气结束，吸气开始）
-#
-#     breathing_phases = []  # 保存每个时间点的呼吸阶段
-#
-#     for i in range(len(smoothed_signal)):
-#         if len(peaks) > 0 and i < peaks[0]:
-#             breathing_phases.append("Inhalation")
-#         elif len(peaks) > 0 and i == peaks[0]:
-#             breathing_phases.append("Transition to Exhalation")
-#             peaks = peaks[1:]
-#         elif len(troughs) > 0 and i < troughs[0]:
-#             breathing_phases.append("Exhalation")
-#         elif len(troughs) > 0 and i == troughs[0]:
-#             breathing_phases.append("Transition to Inhalation")
-#             troughs = troughs[1:]
-#         else:
-#             breathing_phases.append("Unknown")
-#
-#     return breathing_phases
+    return filtered_data  # 返回最新的滤波结果
 
 
 # 保存数据到文件
@@ -75,89 +48,57 @@ def save_data_to_file(file_path, data):
             f.write(','.join(map(str, d)) + '\n')
 
 
-# 信号相位计算函数
-# def signal_phase(signal, method="radians"):
-#     """
-#     Compute the phase of the signal.
-#
-#     Parameters:
-#     signal : list or array
-#         The signal (binary or continuous) for which to compute the phase.
-#     method : str
-#         The format of the output phase (either 'radians', 'degrees', or 'percent').
-#
-#     Returns:
-#     array
-#         A vector containing the phase of the signal.
-#     """
-#     # 检查是否为二值信号
-#     if len(set(np.array(signal)[~np.isnan(np.array(signal))])) == 2:
-#         phase = _signal_phase_binary(signal)  # 如果是二值信号
-#     else:
-#         phase = _signal_phase_prophase(signal)  # 如果是连续信号
-#
-#     # 输出格式转换
-#     if method.lower() in ["degree", "degrees"]:
-#         phase = np.rad2deg(phase)
-#     if method.lower() in ["perc", "percent", "percents", "percentage"]:
-#         phase = np.rad2deg(phase) / 360
-#     return phase
+# nk.rsp_phase()
+def detect_breathing_phase_by_derivative(signal_data):
+    """
+    Detect the respiratory phase (inhalation or exhalation) based on the signal derivative (slope).
+    Parameters:
+    signal : list or array
+        The respiratory signal for which to detect phases.
+    Returns:
+    tuple
+        A tuple with the current phase ('Inhalation' or 'Exhalation') and the completion percentage.
+    """
+    # 使用最近的100个数据点进行趋势分析
+    if len(signal_data) < 100:
+        smoothed_signal = np.array(signal_data)
+    else:
+        smoothed_signal = np.array(signal_data[-100:])
 
+    # 计算信号的导数（变化率）
+    derivative = np.diff(smoothed_signal)
+    print(derivative)
+    # 判断当前阶段，根据导数的符号确定呼吸阶段
+    if derivative[-1] > 0:
+        current_phase = "Inhalation"
+    else:
+        current_phase = "Exhalation"
 
-# 计算呼吸阶段的主要函数
-# def rsp_phase(peaks, troughs=None, desired_length=None):
-#     """
-#     Compute respiratory phase (inspiration and expiration).
-#
-#     Parameters:
-#     peaks : list or array
-#         The samples at which the inhalation peaks occur.
-#     troughs : list or array
-#         The samples at which the inhalation troughs occur.
-#     desired_length : int
-#         The desired length of the output phase signal.
-#
-#     Returns:
-#     pd.DataFrame
-#         A DataFrame containing the RSP phase and phase completion.
-#     """
-#     inspiration = np.full(desired_length, np.nan)
-#     inspiration[peaks] = 0.0  # 吸气结束处标记为 0
-#     inspiration[troughs] = 1.0  # 呼气结束处标记为 1
-#
-#     # 填充信号相位
-#     last_element = np.where(~np.isnan(inspiration))[0][-1]
-#     inspiration[0:last_element] = pd.Series(inspiration).ffill().values[0:last_element]
-#
-#     # 计算相位完成度
-#     completion = signal_phase(inspiration, method="percent")
-#
-#     return pd.DataFrame({"RSP_Phase": inspiration, "RSP_Phase_Completion": completion})
-# def detect_breathing_phase(signal):
-#     """
-#     Detect the respiratory phase (inhalation or exhalation) based on the signal peaks and troughs.
-#
-#     Parameters:
-#     signal : list or array
-#         The respiratory signal for which to detect phases.
-#
-#     Returns:
-#     pd.DataFrame
-#         A DataFrame with two columns:
-#         - 'RSP_Phase': 1 for inhalation, 0 for exhalation.
-#         - 'RSP_Phase_Completion': completion percentage of the current phase.
-#     """
-#     smoothed_signal = np.array(signal[-2000:])  # 使用最近的2000个数据点
-#     peaks, _ = find_peaks(smoothed_signal)  # 找到峰值（吸气结束，呼气开始）
-#     troughs, _ = find_peaks(-smoothed_signal)  # 找到谷值（呼气结束，吸气开始）
-#     print(peaks, troughs)
-#     return rsp_phase(peaks, troughs, desired_length=len(smoothed_signal))
+    # 计算呼吸阶段完成度，可以根据信号的相对位置进行估计
+    # 这里简单地根据导数的趋势变化来模拟呼吸的完成度
+    phase_completion = np.abs(derivative[-1]) / np.max(np.abs(derivative)) if np.max(np.abs(derivative)) > 0 else 0
+
+    return current_phase, phase_completion
 
 
 # 获取串口设备列表
 def get_serial_ports():
     ports = serial.tools.list_ports.comports()
     return [port.device for port in ports]
+
+
+def cal_breathing_phases(signal_data):
+    peaks, valleys = find_breathing_points(signal_data)
+    print(f'peaks,valleys:{peaks}, {valleys}')
+
+
+def find_breathing_points(signal_data):
+    # 找到吸气点（峰值）
+    peaks, _ = signal.find_peaks(signal_data)
+
+    # 找到吐气点（谷值）
+    valleys, _ = signal.find_peaks(-signal_data)
+    return peaks, valleys
 
 
 # 子进程中负责读取串口数据和滤波处理
@@ -174,6 +115,8 @@ def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_fl
     data_list = []  # 保存收集的数据
     start_time = time.time()  # 记录开始时间
 
+    # Initialize buffers for accumulating data for filtering and phase detection
+    acc_buffer = {'x_acc': [], 'y_acc': [], 'z_acc': [], 'x_gyro': [], 'y_gyro': [], 'z_gyro': []}
     while running_flag.value:
         if ser.in_waiting > 0:
             # try:
@@ -203,28 +146,50 @@ def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_fl
             x_gyro = twos_complement_and_scale(raw_x_gyro, gyro_range)
             y_gyro = twos_complement_and_scale(raw_y_gyro, gyro_range)
             z_gyro = twos_complement_and_scale(raw_z_gyro, gyro_range)
+            origin_data = [x_acc, y_acc, z_acc, x_gyro, y_gyro, z_gyro]
 
+            # Accumulate data in buffers for filtering
             if use_filter:
-                x_acc_filtered = apply_fir_filter([x_acc], filter_taps)
-                y_acc_filtered = apply_fir_filter([y_acc], filter_taps)
-                z_acc_filtered = apply_fir_filter([z_acc], filter_taps)
-                x_gyro_filtered = apply_fir_filter([x_gyro], filter_taps)
-                y_gyro_filtered = apply_fir_filter([y_gyro], filter_taps)
-                z_gyro_filtered = apply_fir_filter([z_gyro], filter_taps)
-                filtered_data = [x_acc_filtered, y_acc_filtered, z_acc_filtered, x_gyro_filtered, y_gyro_filtered,
-                                 z_gyro_filtered]
-            else:
-                filtered_data = [x_acc, y_acc, z_acc, x_gyro, y_gyro, z_gyro]
+                acc_buffer['x_acc'].append(x_acc)
+                acc_buffer['y_acc'].append(y_acc)
+                acc_buffer['z_acc'].append(z_acc)
+                acc_buffer['x_gyro'].append(x_gyro)
+                acc_buffer['y_gyro'].append(y_gyro)
+                acc_buffer['z_gyro'].append(z_gyro)
+                if len(acc_buffer['x_acc']) >= 150:
+                    x_acc_filtered = apply_fir_filter(acc_buffer['x_acc'], filter_taps)
+                    y_acc_filtered = apply_fir_filter(acc_buffer['y_acc'], filter_taps)
+                    z_acc_filtered = apply_fir_filter(acc_buffer['z_acc'], filter_taps)
+                    x_gyro_filtered = apply_fir_filter(acc_buffer['x_gyro'], filter_taps)
+                    y_gyro_filtered = apply_fir_filter(acc_buffer['y_gyro'], filter_taps)
+                    z_gyro_filtered = apply_fir_filter(acc_buffer['z_gyro'], filter_taps)
 
-            data_list.append(filtered_data)
+                    # Append the filtered data
+                    filtered_data = [x_acc_filtered, y_acc_filtered, z_acc_filtered,
+                                     x_gyro_filtered, y_gyro_filtered, z_gyro_filtered]
+
+                    # cal_breathing_phases(filtered_data[0][-100:])
+                    # 实时呼吸阶段检测
+
+                    current_phase, phase_completion = detect_breathing_phase_by_derivative(list(filtered_data[0]))
+
+                    print(f"Current phase: {current_phase}, Phase completion: {phase_completion:.2f}")
+                    acc_buffer['x_acc'] = []
+                    acc_buffer['y_acc'] = []
+                    acc_buffer['z_acc'] = []
+                    acc_buffer['x_gyro'] = []
+                    acc_buffer['y_gyro'] = []
+                    acc_buffer['z_gyro'] = []
+
+            data_list.append(origin_data)
 
             # 每次收集1000个数据保存一次
             if len(data_list) >= 1000:
                 save_data_to_file(file_path, data_list)
                 data_list.clear()
 
-            # 将滤波后的数据（或原始数据）发送到主进程进行绘图
-            data_queue.put(filtered_data)
+            # 将原始数据发送到主进程进行绘图
+            data_queue.put(origin_data)
 
     end_time = time.time()
     sampling_duration = end_time - start_time
@@ -234,38 +199,6 @@ def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_fl
         save_data_to_file(file_path, data_list)
         print(f"Saved remaining data to {file_path}")
     return sampling_duration
-
-# nk.rsp_phase()
-def detect_breathing_phase_by_derivative(signal):
-    """
-    Detect the respiratory phase (inhalation or exhalation) based on the signal derivative (slope).
-    Parameters:
-    signal : list or array
-        The respiratory signal for which to detect phases.
-    Returns:
-    tuple
-        A tuple with the current phase ('Inhalation' or 'Exhalation') and the completion percentage.
-    """
-    # 使用最近的1000个数据点进行趋势分析
-    if len(signal) < 1000:
-        smoothed_signal = np.array(signal)
-    else:
-        smoothed_signal = np.array(signal[-1000:])
-
-    # 计算信号的导数（变化率）
-    derivative = np.diff(smoothed_signal)
-
-    # 判断当前阶段，根据导数的符号确定呼吸阶段
-    if derivative[-1] > 0:
-        current_phase = "Inhalation"
-    else:
-        current_phase = "Exhalation"
-
-    # 计算呼吸阶段完成度，可以根据信号的相对位置进行估计
-    # 这里简单地根据导数的趋势变化来模拟呼吸的完成度
-    phase_completion = np.abs(derivative[-1]) / np.max(np.abs(derivative)) if np.max(np.abs(derivative)) > 0 else 0
-
-    return current_phase, phase_completion
 
 
 class IMUPlotter(QMainWindow):
@@ -318,6 +251,7 @@ class IMUPlotter(QMainWindow):
             self.users.append(new_user)
             self.user_input.addItem(new_user)
             print(f"Added user: {new_user}")
+
     def init_ui(self):
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
@@ -341,7 +275,6 @@ class IMUPlotter(QMainWindow):
         user_buttons_layout.addWidget(self.delete_user_button)
 
         left_layout.addLayout(user_buttons_layout)
-
 
         # 芯片类型选择
         self.chip_label = QLabel("Select Chip:")
@@ -381,7 +314,6 @@ class IMUPlotter(QMainWindow):
         self.filter_order_input = QLineEdit("5")
         left_layout.addWidget(self.filter_order_label)
         left_layout.addWidget(self.filter_order_input)
-
 
         filter_button_layout = QHBoxLayout()
         # 添加取消滤波器按钮的功能
@@ -430,7 +362,6 @@ class IMUPlotter(QMainWindow):
         self.delete_button.clicked.connect(self.delete_file)
         left_layout.addWidget(self.delete_button)
 
-
         controls_button_layout = QHBoxLayout()
         # 采集数据按钮
         self.start_collect_button = QPushButton("Start Collecting Data")
@@ -454,8 +385,8 @@ class IMUPlotter(QMainWindow):
         right_layout.addLayout(Breathing_label_layout)
 
         # 将左栏和右栏分别加入主布局
-        main_layout.addLayout(left_layout,1)
-        main_layout.addLayout(right_layout,9)
+        main_layout.addLayout(left_layout, 1)
+        main_layout.addLayout(right_layout, 9)
 
         # 设置窗口中心控件
         container = QWidget()
@@ -630,7 +561,6 @@ class IMUPlotter(QMainWindow):
     def fuse_data(self, x, y, z):
         return np.sqrt(x ** 2)
 
-
     def update_plot(self):
         current_time = time.time()
 
@@ -647,21 +577,7 @@ class IMUPlotter(QMainWindow):
 
             self.signal_buffer.append(fused_signal)
 
-            # 实时呼吸阶段检测
-            # breathing_phases = detect_breathing_phase(list(self.signal_buffer))
-            # current_phase = breathing_phases['RSP_Phase'].iloc[-1]
-            # phase_completion = breathing_phases['RSP_Phase_Completion'].iloc[-1]
 
-
-
-
-            # phase_str = "Inhalation" if current_phase == 1 else "Exhalation"
-            # print(f"Current phase: {phase_str}, Phase completion: {phase_completion:.2f}")
-
-            # 实时呼吸阶段检测
-            current_phase, phase_completion = detect_breathing_phase_by_derivative(list(self.signal_buffer))
-
-            print(f"Current phase: {current_phase}, Phase completion: {phase_completion:.2f}")
 
             if len(self.signal_buffer_first_60s) < 60 * 100:
                 self.signal_buffer_first_60s.append(fused_signal)
@@ -672,7 +588,7 @@ class IMUPlotter(QMainWindow):
                                                                        sample_rate=100)
                 self.average_breathing_label.setText(f"60s Average Breathing Rate: {average_breathing_rate:.2f} bpm")
 
-            if len(self.signal_buffer) >= self.min_signal_len :
+            if len(self.signal_buffer) >= self.min_signal_len:
                 self.count_since_last_calculation += 1  # 每次满足条件后自增计数器
 
                 if self.count_since_last_calculation >= 100:  # 满足100个点之后才计算
