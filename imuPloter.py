@@ -1,10 +1,6 @@
-import sys
 import os
 import time
 
-import neurokit2
-import serial
-import serial.tools.list_ports
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton, \
     QLineEdit, QComboBox, QListWidget, QMessageBox, QCheckBox, QInputDialog
@@ -12,204 +8,12 @@ from pyqtgraph import PlotWidget
 import pyqtgraph as pg
 from collections import deque
 from multiprocessing import Process, Queue, Value
-from scipy import signal
-import logging
 from PyQt5.QtCore import QTimer
 from scipy.signal import find_peaks
+import serial
 
-logging.basicConfig(level=logging.INFO)
-
-
-# Helper function to convert two's complement and scale
-def twos_complement_and_scale(raw_data, range_val):
-    return (float(raw_data) / 32767.0) * range_val
-
-
-# FIR 低通滤波器设计
-def design_fir_filter(cutoff_freq, sample_rate, num_taps):
-    nyquist = 0.5 * sample_rate
-    normalized_cutoff = cutoff_freq / nyquist
-    taps = signal.firwin(num_taps, normalized_cutoff, window='hamming')
-    print(f"Designed FIR filter with {num_taps} taps:")
-    print(taps)  # 打印滤波器系数
-    return taps
-
-
-# 应用FIR滤波器
-def apply_fir_filter(data, taps):
-    filtered_data = signal.lfilter(taps, 1.0, data)
-    return filtered_data  # 返回最新的滤波结果
-
-
-# 保存数据到文件
-def save_data_to_file(file_path, data):
-    with open(file_path, 'a') as f:
-        for d in data:
-            f.write(','.join(map(str, d)) + '\n')
-
-
-# nk.rsp_phase()
-def detect_breathing_phase_by_derivative(signal_data):
-    """
-    Detect the respiratory phase (inhalation or exhalation) based on the signal derivative (slope).
-    Parameters:
-    signal : list or array
-        The respiratory signal for which to detect phases.
-    Returns:
-    tuple
-        A tuple with the current phase ('Inhalation' or 'Exhalation') and the completion percentage.
-    """
-    # 使用最近的100个数据点进行趋势分析
-    if len(signal_data) < 100:
-        smoothed_signal = np.array(signal_data)
-    else:
-        smoothed_signal = np.array(signal_data[-100:])
-
-    # 计算信号的导数（变化率）
-    derivative = np.diff(smoothed_signal)
-    # 计算呼吸阶段完成度，可以根据信号的相对位置进行估计
-    # 这里简单地根据导数的趋势变化来模拟呼吸的完成度
-    phase_completion = np.abs(derivative[-1]) / np.max(np.abs(derivative)) if np.max(np.abs(derivative)) > 0 else 0
-
-    derivative_bool = np.where(derivative > 0, 1, -1)
-    # print(derivative)
-    total = sum(derivative_bool)
-    print(f'total:{total}')
-    if abs(total) <= 7:
-        current_phase = "None"
-    else:
-        # 判断当前阶段，根据符号和确定呼吸阶段
-        if total > 0:
-            current_phase = "Inhalation"
-        else:
-            current_phase = "Exhalation"
-        print(f"当前呼吸阶段: {current_phase}")
-
-
-
-    return current_phase, phase_completion
-
-
-# 获取串口设备列表
-def get_serial_ports():
-    ports = serial.tools.list_ports.comports()
-    return [port.device for port in ports]
-
-
-def cal_breathing_phases(signal_data):
-    peaks, valleys = find_breathing_points(signal_data)
-    print(f'peaks,valleys:{peaks}, {valleys}')
-
-
-def find_breathing_points(signal_data):
-    # 找到吸气点（峰值）
-    peaks, _ = signal.find_peaks(signal_data)
-
-    # 找到吐气点（谷值）
-    valleys, _ = signal.find_peaks(-signal_data)
-    return peaks, valleys
-
-
-# 子进程中负责读取串口数据和滤波处理
-def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_flag, file_path, use_filter):
-    try:
-        ser = serial.Serial(serial_port, baud_rate)
-        print(f"Connected to {serial_port} at {baud_rate} baud.")
-    except serial.SerialException as e:
-        print(f"Failed to connect to {serial_port}: {e}")
-        return
-
-    acc_range = 1  # Accelerometer range in g
-    gyro_range = 1  # Gyroscope range in degrees/sec
-    data_list = []  # 保存收集的数据
-    start_time = time.time()  # 记录开始时间
-
-    # Initialize buffers for accumulating data for filtering and phase detection
-    acc_buffer = {'x_acc': [], 'y_acc': [], 'z_acc': [], 'x_gyro': [], 'y_gyro': [], 'z_gyro': []}
-    while running_flag.value:
-        if ser.in_waiting > 0:
-            # try:
-            # 读取串口数据
-            line = ser.readline().decode('utf-8').strip()
-            values = line.split(',')
-
-            # 检查数据长度是否足够
-            if len(values) != 6:
-                raise ValueError(f"Incorrect data length: {line}")
-
-            # 将字符串转换为整型，确保每个值都能转换成功
-            try:
-                raw_x_acc = int(values[0])
-                raw_y_acc = int(values[1])
-                raw_z_acc = int(values[2])
-                raw_x_gyro = int(values[3])
-                raw_y_gyro = int(values[4])
-                raw_z_gyro = int(values[5])
-            except ValueError as ve:
-                raise ValueError(f"ValueError in converting values to int: {line}")
-
-            # 转换和缩放加速度和角速度数据
-            x_acc = twos_complement_and_scale(raw_x_acc, acc_range)
-            y_acc = twos_complement_and_scale(raw_y_acc, acc_range)
-            z_acc = twos_complement_and_scale(raw_z_acc, acc_range)
-            x_gyro = twos_complement_and_scale(raw_x_gyro, gyro_range)
-            y_gyro = twos_complement_and_scale(raw_y_gyro, gyro_range)
-            z_gyro = twos_complement_and_scale(raw_z_gyro, gyro_range)
-            origin_data = [x_acc, y_acc, z_acc, x_gyro, y_gyro, z_gyro]
-
-            # Accumulate data in buffers for filtering
-            if use_filter:
-                acc_buffer['x_acc'].append(x_acc)
-                acc_buffer['y_acc'].append(y_acc)
-                acc_buffer['z_acc'].append(z_acc)
-                acc_buffer['x_gyro'].append(x_gyro)
-                acc_buffer['y_gyro'].append(y_gyro)
-                acc_buffer['z_gyro'].append(z_gyro)
-                if len(acc_buffer['x_acc']) >= 100:
-                    x_acc_filtered = apply_fir_filter(acc_buffer['x_acc'], filter_taps)
-                    y_acc_filtered = apply_fir_filter(acc_buffer['y_acc'], filter_taps)
-                    z_acc_filtered = apply_fir_filter(acc_buffer['z_acc'], filter_taps)
-                    x_gyro_filtered = apply_fir_filter(acc_buffer['x_gyro'], filter_taps)
-                    y_gyro_filtered = apply_fir_filter(acc_buffer['y_gyro'], filter_taps)
-                    z_gyro_filtered = apply_fir_filter(acc_buffer['z_gyro'], filter_taps)
-
-                    # Append the filtered data
-                    filtered_data = [x_acc_filtered, y_acc_filtered, z_acc_filtered,
-                                     x_gyro_filtered, y_gyro_filtered, z_gyro_filtered]
-
-                    # cal_breathing_phases(filtered_data[0][-100:])
-                    # 实时呼吸阶段检测
-
-                    current_phase, phase_completion = detect_breathing_phase_by_derivative(list(filtered_data[0]))
-
-                    print(f"Current phase: {current_phase}, Phase completion: {phase_completion:.2f}")
-                    acc_buffer['x_acc'] = []
-                    acc_buffer['y_acc'] = []
-                    acc_buffer['z_acc'] = []
-                    acc_buffer['x_gyro'] = []
-                    acc_buffer['y_gyro'] = []
-                    acc_buffer['z_gyro'] = []
-
-            data_list.append(origin_data)
-
-            # 每次收集1000个数据保存一次
-            if len(data_list) >= 1000:
-                save_data_to_file(file_path, data_list)
-                data_list.clear()
-
-            # 将原始数据发送到主进程进行绘图
-            data_queue.put(origin_data)
-
-    end_time = time.time()
-    sampling_duration = end_time - start_time
-    print(f"Sampling duration: {sampling_duration:.2f} seconds")
-
-    if data_list:
-        save_data_to_file(file_path, data_list)
-        print(f"Saved remaining data to {file_path}")
-    return sampling_duration
-
-
+from data_processing import design_fir_filter
+from serial_reader import read_serial_data, apply_fir_filter
 class IMUPlotter(QMainWindow):
     def __init__(self, data_queue, max_len=1000):
         super().__init__()
@@ -614,20 +418,8 @@ class IMUPlotter(QMainWindow):
                 self.x_vals[key].append(data[i])
                 x_range = np.arange(len(self.x_vals[key]))
                 self.plots[key].setData(x_range, list(self.x_vals[key]))
-
-
-if __name__ == '__main__':
-    app = QApplication(sys.argv)
-
-    if not os.path.exists('./data'):
-        os.makedirs('./data')
-
-    data_queue = Queue()
-    running_flag = Value('i', 1)
-
-    window = IMUPlotter(data_queue)
-    window.filter_taps = design_fir_filter(0.5, 100, 21)
-    window.running_flag = running_flag
-    window.show()
-
-    sys.exit(app.exec_())
+    
+# 获取串口设备列表
+def get_serial_ports():
+    ports = serial.tools.list_ports.comports()
+    return [port.device for port in ports]

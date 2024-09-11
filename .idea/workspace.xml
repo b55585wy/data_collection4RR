@@ -4,9 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="b2985bd8-9ffe-4753-ae0d-9b8379e7f343" name="更改" comment="实现非单点滤波。待优化phase呼吸阶段判断。">
+    <list default="true" id="b2985bd8-9ffe-4753-ae0d-9b8379e7f343" name="更改" comment="进行三轴的数据融合，但是效果不好">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/model_data_collection.py" beforeDir="false" afterPath="$PROJECT_DIR$/model_data_collection.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/model_data_collection.py" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -138,6 +138,9 @@
       <workItem from="1725982578459" duration="4172000" />
       <workItem from="1726018727019" duration="2146000" />
       <workItem from="1726028254540" duration="4603000" />
+      <workItem from="1726036997688" duration="2649000" />
+      <workItem from="1726054126468" duration="7000" />
+      <workItem from="1726054259832" duration="21000" />
     </task>
     <task id="LOCAL-00001" summary="实现非单点滤波。待优化phase呼吸阶段判断。">
       <option name="closed" value="true" />
@@ -153,12 +156,23 @@
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="实现非单点滤波。待优化phase呼吸阶段判断。" />
     <option name="LAST_COMMIT_MESSAGE" value="实现非单点滤波。待优化phase呼吸阶段判断。" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/esp32s34visual$model_data_collection.coverage" NAME="model_data_collection 覆盖结果" MODIFIED="1726032936526" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/esp32s34visual$model_data_collection.coverage" NAME="model_data_collection 覆盖结果" MODIFIED="1726034596870" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/esp32s34visual$voltage.coverage" NAME="voltage 覆盖结果" MODIFIED="1725865936729" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/../../time_series_sync" />
     <SUITE FILE_PATH="coverage/esp32s34visual$visualzation.coverage" NAME="visualzation 覆盖结果" MODIFIED="1725713022188" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
