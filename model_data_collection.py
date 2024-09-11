@@ -67,16 +67,25 @@ def detect_breathing_phase_by_derivative(signal_data):
 
     # 计算信号的导数（变化率）
     derivative = np.diff(smoothed_signal)
-    print(derivative)
-    # 判断当前阶段，根据导数的符号确定呼吸阶段
-    if derivative[-1] > 0:
-        current_phase = "Inhalation"
-    else:
-        current_phase = "Exhalation"
-
     # 计算呼吸阶段完成度，可以根据信号的相对位置进行估计
     # 这里简单地根据导数的趋势变化来模拟呼吸的完成度
     phase_completion = np.abs(derivative[-1]) / np.max(np.abs(derivative)) if np.max(np.abs(derivative)) > 0 else 0
+
+    derivative_bool = np.where(derivative > 0, 1, -1)
+    # print(derivative)
+    total = sum(derivative_bool)
+    print(f'total:{total}')
+    if abs(total) <= 7:
+        current_phase = "None"
+    else:
+        # 判断当前阶段，根据符号和确定呼吸阶段
+        if total > 0:
+            current_phase = "Inhalation"
+        else:
+            current_phase = "Exhalation"
+        print(f"当前呼吸阶段: {current_phase}")
+
+
 
     return current_phase, phase_completion
 
@@ -156,7 +165,7 @@ def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_fl
                 acc_buffer['x_gyro'].append(x_gyro)
                 acc_buffer['y_gyro'].append(y_gyro)
                 acc_buffer['z_gyro'].append(z_gyro)
-                if len(acc_buffer['x_acc']) >= 150:
+                if len(acc_buffer['x_acc']) >= 100:
                     x_acc_filtered = apply_fir_filter(acc_buffer['x_acc'], filter_taps)
                     y_acc_filtered = apply_fir_filter(acc_buffer['y_acc'], filter_taps)
                     z_acc_filtered = apply_fir_filter(acc_buffer['z_acc'], filter_taps)
@@ -559,7 +568,7 @@ class IMUPlotter(QMainWindow):
             return self.posteri_estimate
 
     def fuse_data(self, x, y, z):
-        return np.sqrt(x ** 2)
+        return np.sqrt(x**2+y**2+z**2)
 
     def update_plot(self):
         current_time = time.time()
