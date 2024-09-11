@@ -75,7 +75,7 @@ def detect_breathing_phase_by_derivative(signal_data):
     # print(derivative)
     total = sum(derivative_bool)
     print(f'total:{total}')
-    if abs(total) <= 7:
+    if abs(total) <= 27:
         current_phase = "None"
     else:
         # 判断当前阶段，根据符号和确定呼吸阶段

@@ -4,7 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="b2985bd8-9ffe-4753-ae0d-9b8379e7f343" name="更改" comment="实现非单点滤波。待优化phase呼吸阶段判断。">
+    <list default="true" id="b2985bd8-9ffe-4753-ae0d-9b8379e7f343" name="更改" comment="实现平躺的吐气呼气的判断，待考虑是否应该结合实时的呼吸速率进行微分取得phase的操作">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/model_data_collection.py" beforeDir="false" afterPath="$PROJECT_DIR$/model_data_collection.py" afterDir="false" />
     </list>
@@ -22,6 +22,11 @@
     </option>
   </component>
   <component name="Git.Settings">
+    <option name="RECENT_BRANCH_BY_REPOSITORY">
+      <map>
+        <entry key="$PROJECT_DIR$" value="main" />
+      </map>
+    </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
   <component name="GitHubPullRequestSearchHistory">{
@@ -137,7 +142,7 @@
       <workItem from="1725972078008" duration="7445000" />
       <workItem from="1725982578459" duration="4172000" />
       <workItem from="1726018727019" duration="2146000" />
-      <workItem from="1726028254540" duration="4603000" />
+      <workItem from="1726028254540" duration="5737000" />
     </task>
     <task id="LOCAL-00001" summary="实现非单点滤波。待优化phase呼吸阶段判断。">
       <option name="closed" value="true" />
@@ -147,7 +152,15 @@
       <option name="project" value="LOCAL" />
       <updated>1725986765542</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="实现平躺的吐气呼气的判断，待考虑是否应该结合实时的呼吸速率进行微分取得phase的操作">
+      <option name="closed" value="true" />
+      <created>1726033121712</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1726033121712</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -155,10 +168,11 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="实现非单点滤波。待优化phase呼吸阶段判断。" />
-    <option name="LAST_COMMIT_MESSAGE" value="实现非单点滤波。待优化phase呼吸阶段判断。" />
+    <MESSAGE value="实现平躺的吐气呼气的判断，待考虑是否应该结合实时的呼吸速率进行微分取得phase的操作" />
+    <option name="LAST_COMMIT_MESSAGE" value="实现平躺的吐气呼气的判断，待考虑是否应该结合实时的呼吸速率进行微分取得phase的操作" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/esp32s34visual$model_data_collection.coverage" NAME="model_data_collection 覆盖结果" MODIFIED="1726032936526" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/esp32s34visual$model_data_collection.coverage" NAME="model_data_collection 覆盖结果" MODIFIED="1726033953342" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/esp32s34visual$voltage.coverage" NAME="voltage 覆盖结果" MODIFIED="1725865936729" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/../../time_series_sync" />
     <SUITE FILE_PATH="coverage/esp32s34visual$visualzation.coverage" NAME="visualzation 覆盖结果" MODIFIED="1725713022188" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
