@@ -21,8 +21,8 @@ def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_fl
         ser = serial.Serial(serial_port, baud_rate)
         print(f"Connected to {serial_port} at {baud_rate} baud.")
         # 创建 socket 连接
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # 使用 UDP
-        sock.connect(('192.168.1.100', 7897))  # 连接到下位机的 IP 和端口
+        # sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # 使用 UDP
+        # sock.connect(('192.168.1.100', 7897))  # 连接到下位机的 IP 和端口
 
     except serial.SerialException as e:
         print(f"Failed to connect to {serial_port}: {e}")
@@ -92,12 +92,12 @@ def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_fl
                     filtered_data_list[3].append(x_gyro_filtered[-1])
                     filtered_data_list[4].append(y_gyro_filtered[-1])
                     filtered_data_list[5].append(z_gyro_filtered[-1])
-
+                    print(filtered_data_list[0][-100:])
                     # cal_breathing_phases(filtered_data[0][-100:])
                     # 实时呼吸阶段检测
                     
                     current_phase, phase_completion = detect_breathing_phase_by_derivative(list(filtered_data_list[0]))
-                    sock.sendall(f"{current_phase}\n".encode('utf-8'))  # 发送 current_phase
+                    # sock.sendall(f"{current_phase}\n".encode('utf-8'))  # 发送 current_phase
                     print(f"Current phase: {current_phase}, Phase completion: {phase_completion:.2f}")
                 elif  len(acc_buffer['x_acc']) == acc_buffer['x_acc'].maxlen and flag == 1:
                     flag = 0

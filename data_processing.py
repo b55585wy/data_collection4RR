@@ -19,7 +19,6 @@ def apply_fir_filter(data, taps):
     return filtered_data  # 返回最新的滤波结果
 
     
-# nk.rsp_phase()
 def detect_breathing_phase_by_derivative(signal_data):
     """
     Detect the respiratory phase (inhalation or exhalation) based on the signal derivative (slope).

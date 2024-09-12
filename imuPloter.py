@@ -405,8 +405,16 @@ class IMUPlotter(QMainWindow):
                 self.count_since_last_calculation += 1  # 每次满足条件后自增计数器
 
                 if self.count_since_last_calculation >= 100:  # 满足100个点之后才计算
-                    current_breathing_rate = self.calculate_breathing_rate(list(self.signal_buffer), sample_rate=100)
-                    self.realtime_breathing_label.setText(f"Real-time Breathing Rate: {current_breathing_rate:.2f} bpm")
+                    current_breathing_rate = int(self.calculate_breathing_rate(list(self.signal_buffer), sample_rate=100))
+                    if current_breathing_rate < 4:
+                        self.realtime_breathing_label.setText(f"Invalid data: {current_breathing_rate} bpm")
+                    elif current_breathing_rate > 20:
+                        self.realtime_breathing_label.setText("Invalid data")
+                    else:
+                        if current_breathing_rate > 12:
+                            self.realtime_breathing_label.setText(f"Breathing too fast! Rate: {current_breathing_rate} bpm")
+                        else:
+                            self.realtime_breathing_label.setText(f"Real-time Breathing Rate: {current_breathing_rate} bpm")
                     self.count_since_last_calculation = 0  # 重置计数器
 
             self.update_graph(data)
