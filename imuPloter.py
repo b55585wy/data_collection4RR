@@ -1,19 +1,24 @@
+import asyncio
 import os
+import threading
 import time
 
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton, \
-    QLineEdit, QComboBox, QListWidget, QMessageBox, QCheckBox, QInputDialog
+    QLineEdit, QComboBox, QListWidget, QMessageBox, QCheckBox, QInputDialog, QSplitter
 from pyqtgraph import PlotWidget
 import pyqtgraph as pg
 from collections import deque
-from multiprocessing import Process, Queue, Value
-from PyQt5.QtCore import QTimer
-from scipy.signal import find_peaks
-import serial
+from multiprocessing import Process, Value
+from PyQt5.QtCore import QTimer, QPropertyAnimation, QEasingCurve
+from PyQt5.QtGui import QFont, QIcon
+from PyQt5.QtCore import Qt
 
-from data_processing import design_fir_filter
-from serial_reader import read_serial_data, apply_fir_filter
+from data_processing import KalmanFilter, calculate_breathing_rate, design_fir_filter, detect_breathing_phase_by_derivative, fuse_data
+from serial_reader import get_serial_ports, read_serial_data
+import socket
+import subprocess
+
 class IMUPlotter(QMainWindow):
     def __init__(self, data_queue, max_len=1000):
         super().__init__()
@@ -26,7 +31,7 @@ class IMUPlotter(QMainWindow):
         self.signal_buffer_first_60s = deque(maxlen=60 * 100)
         self.count_since_last_calculation = 0  # 初始化计数器
 
-        self.kalman_filter = self.KalmanFilter(process_variance=1e-5, measurement_variance=1e-2,
+        self.kalman_filter = KalmanFilter(process_variance=1e-5, measurement_variance=1e-2,
                                                estimated_measurement_variance=1.0)
         self.last_breathing_rate = 0
 
@@ -44,6 +49,13 @@ class IMUPlotter(QMainWindow):
         }
         self.plots = {}
 
+        # 设置窗口标题和图标
+        self.setWindowTitle("IMU Data Plotter")
+        self.setWindowIcon(QIcon('path_to_your_icon.png'))  # 替换为你的图标路径
+
+        # 设置窗口大小
+        self.setGeometry(100, 100, 1200, 800)
+
         # 初始化UI
         self.init_ui()
 
@@ -57,6 +69,68 @@ class IMUPlotter(QMainWindow):
         self.refresh_timer.timeout.connect(self.refresh_serial_ports)
         self.refresh_timer.start(5000)
 
+        self.tcp_server = None
+        self.tcp_clients = []
+        self.tcp_thread = None
+
+    def start_tcp_server(self, host='0.0.0.0', port=12242):
+        self.tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_server.bind((host, port))
+        self.tcp_server.listen(5)
+        print(f"TCP server listening on {host}:{port}")
+        self.tcp_thread = threading.Thread(target=self.accept_connections, daemon=True)
+        self.tcp_thread.start()
+        
+        # 启动 tcp_client.py
+        data_files = os.listdir('./data')
+        if data_files:
+            first_file = os.path.join('./data', data_files[0])
+            subprocess.Popen(['python', 'tcp_client.py', host, str(port), first_file])
+        else:
+            print("No data files found in ./data directory")
+
+        # 启动更新定时器
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self.update_plot)
+        self.update_timer.start(10)  # 每10毫秒更新一次
+
+    def accept_connections(self):
+        while True:
+            client, addr = self.tcp_server.accept()
+            self.tcp_clients.append(client)
+            threading.Thread(target=self.handle_client, args=(client,), daemon=True).start()
+
+    def handle_client(self, client):
+        while True:
+            try:
+                data = client.recv(1024).decode().strip()
+                if not data:
+                    break
+                # 解析接收到的数据
+                values = list(map(float, data.split(',')))
+                if len(values) == 6:
+                    self.data_queue.put(values)
+            except:
+                break
+        client.close()
+        self.tcp_clients.remove(client)
+
+    def send_tcp_data(self, data):
+        for client in self.tcp_clients:
+            try:
+                client.send(data.encode())
+            except:
+                self.tcp_clients.remove(client)
+
+    def stop_tcp_server(self):
+        if self.tcp_server:
+            self.tcp_server.close()
+            for client in self.tcp_clients:
+                client.close()
+            self.tcp_clients.clear()
+            self.tcp_thread.join()
+            print("TCP server stopped")
+
     def add_user(self):
         """添加用户"""
         new_user, ok = QInputDialog.getText(self, 'Add User', 'Enter new user name:')
@@ -69,6 +143,60 @@ class IMUPlotter(QMainWindow):
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
         right_layout = QVBoxLayout()
+
+        # 设置全局字体
+        app = QApplication.instance()
+        app.setFont(QFont('Arial', 10))
+
+        # 设置左侧面板的样式
+        left_panel = QWidget()
+        left_panel.setStyleSheet("""
+            QWidget {
+                background-color: #f0f0f0;
+                border-right: 1px solid #cccccc;
+            }
+            QLabel {
+                font-weight: bold;
+                margin-top: 10px;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 5px 10px;
+                margin: 5px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QComboBox, QLineEdit {
+                padding: 5px;
+                margin: 5px;
+                border: 1px solid #cccccc;
+                border-radius: 3px;
+            }
+        """)
+        left_panel.setLayout(left_layout)
+
+        # 设置右侧面板的样式
+        right_panel = QWidget()
+        right_panel.setStyleSheet("""
+            QWidget {
+                background-color: white;
+            }
+        """)
+        right_panel.setLayout(right_layout)
+
+        # 使用QSplitter来允许用户调整左右面板的大小
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.addWidget(left_panel)
+        self.splitter.addWidget(right_panel)
+        self.splitter.setSizes([300, 900])  # 置初始大小
+
+        # 设置主布局
+        main_layout = QHBoxLayout()
+        main_layout.addWidget(self.splitter)
 
         # 用户选择和管理
         self.user_label = QLabel("Select User:")
@@ -129,17 +257,9 @@ class IMUPlotter(QMainWindow):
         left_layout.addWidget(self.filter_order_input)
 
         filter_button_layout = QHBoxLayout()
-        # 添加取消滤波器按钮的功能
-        self.remove_filter_button = QPushButton("Remove Filter")
-        self.remove_filter_button.clicked.connect(self.remove_filter)
-        filter_button_layout.addWidget(self.remove_filter_button)
+        
 
-        # 应用FIR滤波器设置按钮
-        self.apply_filter_button = QPushButton("Apply FIR Filter")
-        self.apply_filter_button.clicked.connect(self.apply_filter_order)
-        filter_button_layout.addWidget(self.apply_filter_button)
-
-        left_layout.addLayout(filter_button_layout)
+        
         # 绘图控件
         self.graphWidget = PlotWidget()
         self.graphWidget.enableAutoRange(axis='y')
@@ -175,6 +295,18 @@ class IMUPlotter(QMainWindow):
         self.delete_button.clicked.connect(self.delete_file)
         left_layout.addWidget(self.delete_button)
 
+
+        # 应用FIR滤波器设置按钮
+        self.apply_filter_button = QPushButton("Apply FIR Filter")
+        self.apply_filter_button.clicked.connect(self.apply_filter_order)
+        filter_button_layout.addWidget(self.apply_filter_button)
+        left_layout.addLayout(filter_button_layout)
+
+        # 添加取消滤波器按钮的功能
+        self.remove_filter_button = QPushButton("Remove Filter")
+        self.remove_filter_button.clicked.connect(self.remove_filter)
+        filter_button_layout.addWidget(self.remove_filter_button)
+        left_layout.addLayout(filter_button_layout)
         controls_button_layout = QHBoxLayout()
         # 采集数据按钮
         self.start_collect_button = QPushButton("Start Collecting Data")
@@ -186,20 +318,47 @@ class IMUPlotter(QMainWindow):
         controls_button_layout.addWidget(self.stop_collect_button)
 
         left_layout.addLayout(controls_button_layout)
+        
+        # 添加 TCP 连接控制按钮
+        tcp_button_layout = QHBoxLayout()
 
+        self.start_tcp_button = QPushButton("Start TCP Server")
+        self.start_tcp_button.clicked.connect(lambda: self.start_tcp_server())
+        tcp_button_layout.addWidget(self.start_tcp_button)
+
+        self.stop_tcp_button = QPushButton("Stop TCP Server")
+        self.stop_tcp_button.clicked.connect(self.stop_tcp_server)
+        tcp_button_layout.addWidget(self.stop_tcp_button)
+
+        left_layout.addLayout(tcp_button_layout)  # 将 TCP 控制按钮加入布局
+        
         # 添加呼吸速率显示
         self.realtime_breathing_label = QLabel("Real-time Breathing Rate: 0 bpm")
         self.average_breathing_label = QLabel("first 60s Average Breathing Rate: 0 bpm")
+
+        # 美化呼吸速率标签
+        self.realtime_breathing_label.setStyleSheet("""
+            font-size: 14px;
+            font-weight: bold;
+            color: #333333;
+            background-color: #e6f3ff;
+            padding: 5px;
+            border-radius: 3px;
+        """)
+        self.average_breathing_label.setStyleSheet("""
+            font-size: 14px;
+            font-weight: bold;
+            color: #333333;
+            background-color: #e6ffe6;
+            padding: 5px;
+            border-radius: 3px;
+        """)
 
         Breathing_label_layout = QHBoxLayout()
         # 将实时和平均呼吸速率标签加入右侧布局
         Breathing_label_layout.addWidget(self.realtime_breathing_label)
         Breathing_label_layout.addWidget(self.average_breathing_label)
         right_layout.addLayout(Breathing_label_layout)
-
-        # 将左栏和右栏分别加入主布局
-        main_layout.addLayout(left_layout, 1)
-        main_layout.addLayout(right_layout, 9)
 
         # 设置窗口中心控件
         container = QWidget()
@@ -295,12 +454,15 @@ class IMUPlotter(QMainWindow):
 
         self.serial_port = self.serial_port_input.currentText()
         self.running_flag.value = 1
-
+        #初始化串口进程，如波特率，数据队列，滤波器，运行标志，文件路径，是否使用滤波器
         self.serial_process = Process(target=read_serial_data, args=(
             self.serial_port, 115200, self.data_queue, self.filter_taps, self.running_flag, self.file_path,
             self.use_filter))
         self.serial_process.start()
         print(f"Started collecting data: {file_name}")
+
+        self.start_collect_button.setEnabled(False)
+        self.stop_collect_button.setEnabled(True)
 
     def stop_collecting_data(self):
         end_time = time.time()
@@ -322,59 +484,24 @@ class IMUPlotter(QMainWindow):
         self.average_calculated = False
         self.load_files()
 
+        self.start_collect_button.setEnabled(True)
+        self.stop_collect_button.setEnabled(False)
+
     def update_plot_visibility(self):
         for key in self.checkboxes:
             if self.checkboxes[key].isChecked():
-                self.plots[key].setVisible(True)
+                self.plots[key].setVisible            
             else:
                 self.plots[key].setVisible(False)
                 self.x_vals[key].clear()
                 self.plots[key].setData([], [])
 
-    def calculate_breathing_rate(self, signal_data, sample_rate):
-        fft_result = np.fft.fft(signal_data)
-        freqs = np.fft.fftfreq(len(signal_data), d=1 / sample_rate)
-
-        positive_freqs = freqs[freqs > 0]
-        positive_fft = np.abs(fft_result[freqs > 0])
-
-        valid_idx = np.where((positive_freqs >= 0.05) & (positive_freqs <= 0.5))
-        valid_freqs = positive_freqs[valid_idx]
-        valid_fft = positive_fft[valid_idx]
-
-        if len(valid_fft) == 0:
-            print("No valid frequency components found in the 0.05Hz-0.5Hz range. Using last breathing rate.")
-            return self.last_breathing_rate
-
-        dominant_freq = valid_freqs[np.argmax(valid_fft)]
-        breathing_rate = dominant_freq * 60
-
-        self.last_breathing_rate = breathing_rate
-        return breathing_rate
-
-    class KalmanFilter:
-        def __init__(self, process_variance, measurement_variance, estimated_measurement_variance):
-            self.process_variance = process_variance
-            self.measurement_variance = measurement_variance
-            self.estimated_measurement_variance = estimated_measurement_variance
-            self.posteri_estimate = 0.0
-            self.posteri_error_estimate = 1.0
-            self.last_breathing_rate = 0
-
-        def update(self, measurement):
-            priori_estimate = self.posteri_estimate
-            priori_error_estimate = self.posteri_error_estimate + self.process_variance
-
-            blending_factor = priori_error_estimate / (priori_error_estimate + self.measurement_variance)
-            self.posteri_estimate = priori_estimate + blending_factor * (measurement - priori_estimate)
-            self.posteri_error_estimate = (1 - blending_factor) * priori_error_estimate
-
-            return self.posteri_estimate
-
-    def fuse_data(self, x, y, z):
-        return np.sqrt(x**2+y**2+z**2)
-
     def update_plot(self):
+        while not self.data_queue.empty():
+            data = self.data_queue.get()
+            self.process_and_plot_data(data)
+
+    def process_and_plot_data(self, data):
         current_time = time.time()
 
         if not self.stabilized and self.start_time:
@@ -382,42 +509,46 @@ class IMUPlotter(QMainWindow):
                 self.stabilized = True
             return
 
-        while not self.data_queue.empty():
-            data = self.data_queue.get()
-            x_acc, y_acc, z_acc = data[:3]
+        x_acc, y_acc, z_acc = data[:3]
 
-            fused_signal = self.fuse_data(x_acc, y_acc, z_acc)
+        fused_signal = fuse_data(x_acc, y_acc, z_acc)
 
-            self.signal_buffer.append(fused_signal)
+        self.signal_buffer.append(fused_signal)
 
+        if len(self.signal_buffer_first_60s) < 60 * 100:
+            self.signal_buffer_first_60s.append(fused_signal)
 
+        if len(self.signal_buffer_first_60s) == 60 * 100 and not self.average_calculated:
+            self.average_calculated = True
+            average_breathing_rate = calculate_breathing_rate(list(self.signal_buffer_first_60s),
+                                                                   sample_rate=100)
+            self.average_breathing_label.setText(f"60s Average Breathing Rate: {average_breathing_rate:.2f} bpm")
 
-            if len(self.signal_buffer_first_60s) < 60 * 100:
-                self.signal_buffer_first_60s.append(fused_signal)
+        if len(self.signal_buffer) >= self.min_signal_len:
+            self.count_since_last_calculation += 1  # 每次满足条件后自增计数器
 
-            if len(self.signal_buffer_first_60s) == 60 * 100 and not self.average_calculated:
-                self.average_calculated = True
-                average_breathing_rate = self.calculate_breathing_rate(list(self.signal_buffer_first_60s),
-                                                                       sample_rate=100)
-                self.average_breathing_label.setText(f"60s Average Breathing Rate: {average_breathing_rate:.2f} bpm")
-
-            if len(self.signal_buffer) >= self.min_signal_len:
-                self.count_since_last_calculation += 1  # 每次满足条件后自增计数器
-
-                if self.count_since_last_calculation >= 100:  # 满足100个点之后才计算
-                    current_breathing_rate = int(self.calculate_breathing_rate(list(self.signal_buffer), sample_rate=100))
-                    if current_breathing_rate < 4:
-                        self.realtime_breathing_label.setText(f"Invalid data: {current_breathing_rate} bpm")
-                    elif current_breathing_rate > 20:
-                        self.realtime_breathing_label.setText("Invalid data")
+            if self.count_since_last_calculation >= 100:  # 满足100个点之后才计算
+                current_breathing_rate = int(calculate_breathing_rate(list(self.signal_buffer), sample_rate=100, last_breathing_rate=self.last_breathing_rate))
+                
+                # 检测呼吸阶段
+                current_phase, _ = detect_breathing_phase_by_derivative(list(self.signal_buffer))
+                
+                # 通过TCP发送呼吸阶段
+                breathing_signal = "1" if current_phase == "Expiration" else "0"
+                self.send_tcp_data(breathing_signal)
+                
+                if current_breathing_rate < 4:
+                    self.realtime_breathing_label.setText(f"Invalid data: {current_breathing_rate} bpm")
+                elif current_breathing_rate > 20:
+                    self.realtime_breathing_label.setText("Invalid data")
+                else:
+                    if current_breathing_rate > 12:
+                        self.realtime_breathing_label.setText(f"Breathing too fast! Rate: {current_breathing_rate} bpm")
                     else:
-                        if current_breathing_rate > 12:
-                            self.realtime_breathing_label.setText(f"Breathing too fast! Rate: {current_breathing_rate} bpm")
-                        else:
-                            self.realtime_breathing_label.setText(f"Real-time Breathing Rate: {current_breathing_rate} bpm")
-                    self.count_since_last_calculation = 0  # 重置计数器
+                        self.realtime_breathing_label.setText(f"Real-time Breathing Rate: {current_breathing_rate} bpm")
+                self.count_since_last_calculation = 0  # 重置计数器
 
-            self.update_graph(data)
+        self.update_graph(data)
 
     def update_graph(self, data):
         keys = ['x_acc', 'y_acc', 'z_acc', 'x_gyro', 'y_gyro', 'z_gyro']
@@ -427,7 +558,3 @@ class IMUPlotter(QMainWindow):
                 x_range = np.arange(len(self.x_vals[key]))
                 self.plots[key].setData(x_range, list(self.x_vals[key]))
     
-# 获取串口设备列表
-def get_serial_ports():
-    ports = serial.tools.list_ports.comports()
-    return [port.device for port in ports]

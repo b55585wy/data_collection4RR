@@ -20,9 +20,6 @@ def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_fl
     try:
         ser = serial.Serial(serial_port, baud_rate)
         print(f"Connected to {serial_port} at {baud_rate} baud.")
-        # 创建 socket 连接
-        # sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # 使用 UDP
-        # sock.connect(('192.168.1.100', 7897))  # 连接到下位机的 IP 和端口
 
     except serial.SerialException as e:
         print(f"Failed to connect to {serial_port}: {e}")
@@ -47,6 +44,9 @@ def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_fl
                 raise ValueError(f"Incorrect data length: {line}")
 
             # 将字符串转换为整型，确保每个值都能转换成功
+            # 这里可以更换成 data = list(map(int, values))
+            # map可以被列表推导式替代：data = [int(value) for value in values]
+            # 列表推导式比map更快
             try:
                 raw_x_acc = int(values[0])
                 raw_y_acc = int(values[1])
@@ -75,6 +75,7 @@ def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_fl
                 acc_buffer['x_gyro'].append(x_gyro)
                 acc_buffer['y_gyro'].append(y_gyro)
                 acc_buffer['z_gyro'].append(z_gyro)
+                print(f"len(acc_buffer['x_acc']): {len(acc_buffer['x_acc'])},maxlen: {acc_buffer['x_acc'].maxlen}")
                 # 如果缓冲区有maxlen代表已经稳定，可以进行滤波。
                 if len(acc_buffer['x_acc']) == acc_buffer['x_acc'].maxlen and flag == 0:
                     # acc_buffer滤波历史数据已经稳定，可以进行滤波，
@@ -95,10 +96,8 @@ def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_fl
                     print(filtered_data_list[0][-100:])
                     # cal_breathing_phases(filtered_data[0][-100:])
                     # 实时呼吸阶段检测
-                    
-                    current_phase, phase_completion = detect_breathing_phase_by_derivative(list(filtered_data_list[0]))
-                    # sock.sendall(f"{current_phase}\n".encode('utf-8'))  # 发送 current_phase
-                    print(f"Current phase: {current_phase}, Phase completion: {phase_completion:.2f}")
+                    # 发送呼吸阶段信息到下位机
+                   
                 elif  len(acc_buffer['x_acc']) == acc_buffer['x_acc'].maxlen and flag == 1:
                     flag = 0
                     x_acc_filtered = apply_fir_filter(acc_buffer['x_acc'], filter_taps)
@@ -110,6 +109,10 @@ def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_fl
                     # Append the filtered data
                     filtered_data_list = [x_acc_filtered, y_acc_filtered, z_acc_filtered,
                                      x_gyro_filtered, y_gyro_filtered, z_gyro_filtered]
+                    current_phase, phase_completion = detect_breathing_phase_by_derivative(list(filtered_data_list[0]))
+                    print(f"Current phase: {current_phase}, Phase completion: {phase_completion:.2f}")
+                    # 发送呼吸阶段信息到下位机
+                    breathing_signal = 1 if current_phase == "Expiration" else 0
             data_list.append(origin_data)
 
             # 每次收集1000个数据保存一次
@@ -128,3 +131,9 @@ def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_fl
         save_data_to_file(file_path, data_list)
         print(f"Saved remaining data to {file_path}")
     return sampling_duration
+
+
+# 获取串口设备列表
+def get_serial_ports():
+    ports = serial.tools.list_ports.comports()
+    return [port.device for port in ports]

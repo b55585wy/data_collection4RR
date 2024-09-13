@@ -71,3 +71,46 @@ def find_breathing_points(signal_data):
     # 找到吐气点（谷值）
     valleys, _ = signal.find_peaks(-signal_data)
     return peaks, valleys
+
+def calculate_breathing_rate(signal_data, sample_rate, last_breathing_rate):
+    fft_result = np.fft.fft(signal_data)
+    freqs = np.fft.fftfreq(len(signal_data), d=1 / sample_rate)
+
+    positive_freqs = freqs[freqs > 0]
+    positive_fft = np.abs(fft_result[freqs > 0])
+
+    valid_idx = np.where((positive_freqs >= 0.05) & (positive_freqs <= 0.5))
+    valid_freqs = positive_freqs[valid_idx]
+    valid_fft = positive_fft[valid_idx]
+
+    if len(valid_fft) == 0:
+        print("No valid frequency components found in the 0.05Hz-0.5Hz range. Using last breathing rate.")
+        return last_breathing_rate
+
+    dominant_freq = valid_freqs[np.argmax(valid_fft)]
+    breathing_rate = dominant_freq * 60
+
+    last_breathing_rate = breathing_rate
+    return breathing_rate
+
+class KalmanFilter:
+    def __init__(self, process_variance, measurement_variance, estimated_measurement_variance):
+        self.process_variance = process_variance
+        self.measurement_variance = measurement_variance
+        self.estimated_measurement_variance = estimated_measurement_variance
+        self.posteri_estimate = 0.0
+        self.posteri_error_estimate = 1.0
+        self.last_breathing_rate = 0
+
+    def update(self, measurement):
+        priori_estimate = self.posteri_estimate
+        priori_error_estimate = self.posteri_error_estimate + self.process_variance
+
+        blending_factor = priori_error_estimate / (priori_error_estimate + self.measurement_variance)
+        self.posteri_estimate = priori_estimate + blending_factor * (measurement - priori_estimate)
+        self.posteri_error_estimate = (1 - blending_factor) * priori_error_estimate
+
+        return self.posteri_estimate
+
+def fuse_data(x, y, z):
+    return np.sqrt(x**2+y**2+z**2)

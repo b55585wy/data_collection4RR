@@ -5,6 +5,7 @@ from data_processing import design_fir_filter
 from serial_reader import read_serial_data
 from imuPloter import IMUPlotter
 
+
 if __name__ == '__main__':
     app = QApplication(sys.argv)
 
@@ -15,5 +16,6 @@ if __name__ == '__main__':
     window.filter_taps = design_fir_filter(0.5, 100, 21)
     window.running_flag = running_flag
     window.show()
+  
     
     sys.exit(app.exec_())
