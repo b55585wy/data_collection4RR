@@ -16,120 +16,32 @@ def save_data_to_file(file_path, data):
 
 
 # 子进程中负责读取串口数据和滤波处理
-def read_serial_data(serial_port, baud_rate, data_queue, filter_taps, running_flag, file_path, use_filter):
+def read_serial_data(data_queue, running_flag, port, baud_rate, sampling_duration):
     try:
-        ser = serial.Serial(serial_port, baud_rate)
-        print(f"Connected to {serial_port} at {baud_rate} baud.")
+        ser = serial.Serial(port, baud_rate, timeout=1)  # 添加1秒超时
+        print(f"Connected to {port} at {baud_rate} baud.")
+
+        while running_flag.value:
+            try:
+                if ser.in_waiting > 0:
+                    line = ser.readline().decode('utf-8').strip()
+                    if line:  # 确保读取到了数据
+                        # 处理数据...
+                        pass  # 添加这行作为占位符
+                    else:
+                        print("Received empty line, skipping...")
+                else:
+                    time.sleep(0.1)  # 如果没有数据，短暂休眠以避免CPU过度使用
+            except serial.SerialException as e:
+                print(f"Serial error: {e}")
+                time.sleep(1)  # 出错时等待1秒再重试
+                continue
 
     except serial.SerialException as e:
-        print(f"Failed to connect to {serial_port}: {e}")
-        return
-
-    acc_range = 1  # Accelerometer range in g
-    gyro_range = 1  # Gyroscope range in degrees/sec
-    data_list = []  # 保存收集的数据
-    start_time = time.time()  # 记录开始时间
-    filtered_data_list = []
-    # Initialize buffers for accumulating data for filtering and phase detection
-    acc_buffer = {key: deque(maxlen=500) for key in {'x_acc', 'y_acc', 'z_acc', 'x_gyro', 'y_gyro', 'z_gyro'}}
-    while running_flag.value:
-        if ser.in_waiting > 0:
-            # try:
-            # 读取串口数据
-            line = ser.readline().decode('utf-8').strip()
-            values = line.split(',')
-
-            # 检查数据长度是否足够
-            if len(values) != 6:
-                raise ValueError(f"Incorrect data length: {line}")
-
-            # 将字符串转换为整型，确保每个值都能转换成功
-            # 这里可以更换成 data = list(map(int, values))
-            # map可以被列表推导式替代：data = [int(value) for value in values]
-            # 列表推导式比map更快
-            try:
-                raw_x_acc = int(values[0])
-                raw_y_acc = int(values[1])
-                raw_z_acc = int(values[2])
-                raw_x_gyro = int(values[3])
-                raw_y_gyro = int(values[4])
-                raw_z_gyro = int(values[5])
-            except ValueError as ve:
-                raise ValueError(f"ValueError in converting values to int: {line}")
-
-            # 转换和缩放加速度和角速度数据
-            x_acc = twos_complement_and_scale(raw_x_acc, acc_range)
-            y_acc = twos_complement_and_scale(raw_y_acc, acc_range)
-            z_acc = twos_complement_and_scale(raw_z_acc, acc_range)
-            x_gyro = twos_complement_and_scale(raw_x_gyro, gyro_range)
-            y_gyro = twos_complement_and_scale(raw_y_gyro, gyro_range)
-            z_gyro = twos_complement_and_scale(raw_z_gyro, gyro_range)
-
-            origin_data = [x_acc, y_acc, z_acc, x_gyro, y_gyro, z_gyro]
-            flag = 1
-            # Accumulate data in buffers for filtering
-            if use_filter:
-                acc_buffer['x_acc'].append(x_acc)
-                acc_buffer['y_acc'].append(y_acc)
-                acc_buffer['z_acc'].append(z_acc)
-                acc_buffer['x_gyro'].append(x_gyro)
-                acc_buffer['y_gyro'].append(y_gyro)
-                acc_buffer['z_gyro'].append(z_gyro)
-                print(f"len(acc_buffer['x_acc']): {len(acc_buffer['x_acc'])},maxlen: {acc_buffer['x_acc'].maxlen}")
-                # 如果缓冲区有maxlen代表已经稳定，可以进行滤波。
-                if len(acc_buffer['x_acc']) == acc_buffer['x_acc'].maxlen and flag == 0:
-                    # acc_buffer滤波历史数据已经稳定，可以进行滤波，
-                    x_acc_filtered = apply_fir_filter(acc_buffer['x_acc'], filter_taps)
-                    y_acc_filtered = apply_fir_filter(acc_buffer['y_acc'], filter_taps)
-                    z_acc_filtered = apply_fir_filter(acc_buffer['z_acc'], filter_taps)
-                    x_gyro_filtered = apply_fir_filter(acc_buffer['x_gyro'], filter_taps)
-                    y_gyro_filtered = apply_fir_filter(acc_buffer['y_gyro'], filter_taps)
-                    z_gyro_filtered = apply_fir_filter(acc_buffer['z_gyro'], filter_taps)
-
-                    # Append the filtered data
-                    filtered_data_list[0].append(x_acc_filtered[-1])
-                    filtered_data_list[1].append(y_acc_filtered[-1])
-                    filtered_data_list[2].append(z_acc_filtered[-1])
-                    filtered_data_list[3].append(x_gyro_filtered[-1])
-                    filtered_data_list[4].append(y_gyro_filtered[-1])
-                    filtered_data_list[5].append(z_gyro_filtered[-1])
-                    print(filtered_data_list[0][-100:])
-                    # cal_breathing_phases(filtered_data[0][-100:])
-                    # 实时呼吸阶段检测
-                    # 发送呼吸阶段信息到下位机
-                   
-                elif  len(acc_buffer['x_acc']) == acc_buffer['x_acc'].maxlen and flag == 1:
-                    flag = 0
-                    x_acc_filtered = apply_fir_filter(acc_buffer['x_acc'], filter_taps)
-                    y_acc_filtered = apply_fir_filter(acc_buffer['y_acc'], filter_taps)
-                    z_acc_filtered = apply_fir_filter(acc_buffer['z_acc'], filter_taps)
-                    x_gyro_filtered = apply_fir_filter(acc_buffer['x_gyro'], filter_taps)
-                    y_gyro_filtered = apply_fir_filter(acc_buffer['y_gyro'], filter_taps)
-                    z_gyro_filtered = apply_fir_filter(acc_buffer['z_gyro'], filter_taps)
-                    # Append the filtered data
-                    filtered_data_list = [x_acc_filtered, y_acc_filtered, z_acc_filtered,
-                                     x_gyro_filtered, y_gyro_filtered, z_gyro_filtered]
-                    current_phase, phase_completion = detect_breathing_phase_by_derivative(list(filtered_data_list[0]))
-                    print(f"Current phase: {current_phase}, Phase completion: {phase_completion:.2f}")
-                    # 发送呼吸阶段信息到下位机
-                    breathing_signal = 1 if current_phase == "Expiration" else 0
-            data_list.append(origin_data)
-
-            # 每次收集1000个数据保存一次
-            if len(data_list) >= 1000:
-                save_data_to_file(file_path, data_list)
-                data_list.clear()
-
-            # 将原始数据发送到主进程进行绘图
-            data_queue.put(origin_data)
-
-    end_time = time.time()
-    sampling_duration = end_time - start_time
-    print(f"Sampling duration: {sampling_duration:.2f} seconds")
-
-    if data_list:
-        save_data_to_file(file_path, data_list)
-        print(f"Saved remaining data to {file_path}")
+        print(f"Failed to connect to {port}: {e}")
+    finally:
+        if 'ser' in locals():
+            ser.close()
     return sampling_duration
 
 

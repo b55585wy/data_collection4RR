@@ -114,3 +114,31 @@ class KalmanFilter:
 
 def fuse_data(x, y, z):
     return np.sqrt(x**2+y**2+z**2)
+
+def preprocess_data(z_acc, window_size=50):
+    # 应用移动平均滤波
+    smoothed_z = np.convolve(z_acc, np.ones(window_size)/window_size, mode='valid')
+    return smoothed_z
+
+def detect_breathing_phase(z_acc, threshold=0.02):
+    # 计算一阶差分
+    diff = np.diff(z_acc)
+    
+    # 判断呼吸阶段
+    phases = []
+    for d in diff:
+        if d > threshold:
+            phases.append("Inspiration")  # 吸气
+        elif d < -threshold:
+            phases.append("Expiration")   # 呼气
+        else:
+            phases.append("Hold")         # 屏息
+
+    return phases
+
+def calculate_phase_percentage(phases):
+    total = len(phases)
+    inspiration = phases.count("Inspiration") / total
+    expiration = phases.count("Expiration") / total
+    hold = phases.count("Hold") / total
+    return inspiration, expiration, hold

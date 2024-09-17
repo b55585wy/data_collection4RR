@@ -5,7 +5,7 @@ import time
 
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton, \
-    QLineEdit, QComboBox, QListWidget, QMessageBox, QCheckBox, QInputDialog, QSplitter
+    QLineEdit, QComboBox, QListWidget, QMessageBox, QCheckBox, QInputDialog, QSplitter, QFileDialog
 from pyqtgraph import PlotWidget
 import pyqtgraph as pg
 from collections import deque
@@ -13,11 +13,14 @@ from multiprocessing import Process, Value
 from PyQt5.QtCore import QTimer, QPropertyAnimation, QEasingCurve
 from PyQt5.QtGui import QFont, QIcon
 from PyQt5.QtCore import Qt
+import joblib
 
-from data_processing import KalmanFilter, calculate_breathing_rate, design_fir_filter, detect_breathing_phase_by_derivative, fuse_data
+from data_processing import KalmanFilter, calculate_breathing_rate, design_fir_filter, detect_breathing_phase_by_derivative, fuse_data, preprocess_data, detect_breathing_phase, calculate_phase_percentage
 from serial_reader import get_serial_ports, read_serial_data
 import socket
 import subprocess
+from ml_processing import MLProcessor, process_imu_data
+from sklearn.model_selection import train_test_split
 
 class IMUPlotter(QMainWindow):
     def __init__(self, data_queue, max_len=1000):
@@ -73,21 +76,27 @@ class IMUPlotter(QMainWindow):
         self.tcp_clients = []
         self.tcp_thread = None
 
+        self.z_acc_buffer = []
+
+        self.ml_processor = MLProcessor()
+        self.model_loaded = False
+
     def start_tcp_server(self, host='0.0.0.0', port=12242):
+        self.stop_tcp_server()  # 确保旧的服务器被关闭
         self.tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp_server.bind((host, port))
-        self.tcp_server.listen(5)
-        print(f"TCP server listening on {host}:{port}")
-        self.tcp_thread = threading.Thread(target=self.accept_connections, daemon=True)
-        self.tcp_thread.start()
-        
-        # 启动 tcp_client.py
-        data_files = os.listdir('./data')
-        if data_files:
-            first_file = os.path.join('./data', data_files[0])
-            subprocess.Popen(['python', 'tcp_client.py', host, str(port), first_file])
-        else:
-            print("No data files found in ./data directory")
+        self.tcp_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            self.tcp_server.bind((host, port))
+            self.tcp_server.listen(5)
+            print(f"TCP server listening on {host}:{port}")
+            self.tcp_thread = threading.Thread(target=self.accept_connections, daemon=True)
+            self.tcp_thread.start()
+            self.start_tcp_button.setEnabled(False)  # 禁用按钮
+            self.stop_tcp_button.setEnabled(True)
+        except Exception as e:
+            print(f"Error starting TCP server: {e}")
+            self.tcp_server.close()
+            self.tcp_server = None
 
         # 启动更新定时器
         self.update_timer = QTimer()
@@ -95,10 +104,19 @@ class IMUPlotter(QMainWindow):
         self.update_timer.start(10)  # 每10毫秒更新一次
 
     def accept_connections(self):
-        while True:
-            client, addr = self.tcp_server.accept()
-            self.tcp_clients.append(client)
-            threading.Thread(target=self.handle_client, args=(client,), daemon=True).start()
+        while self.tcp_server:
+            try:
+                client, addr = self.tcp_server.accept()
+                self.tcp_clients.append(client)
+                threading.Thread(target=self.handle_client, args=(client,), daemon=True).start()
+            except OSError as e:
+                print(f"Error accepting connection: {e}")
+                if self.tcp_server is None or self.tcp_server._closed:
+                    print("TCP server is closed. Exiting accept_connections loop.")
+                    break
+            except Exception as e:
+                print(f"Unexpected error in accept_connections: {e}")
+                break
 
     def handle_client(self, client):
         while True:
@@ -110,7 +128,11 @@ class IMUPlotter(QMainWindow):
                 values = list(map(float, data.split(',')))
                 if len(values) == 6:
                     self.data_queue.put(values)
-            except:
+            except ConnectionResetError:
+                print("Connection reset by peer.")
+                break
+            except Exception as e:
+                print(f"Unexpected error in handle_client: {e}")
                 break
         client.close()
         self.tcp_clients.remove(client)
@@ -128,8 +150,13 @@ class IMUPlotter(QMainWindow):
             for client in self.tcp_clients:
                 client.close()
             self.tcp_clients.clear()
-            self.tcp_thread.join()
+            if self.tcp_thread:
+                self.tcp_thread.join(timeout=5)  # 等待线程结束，最多等待5秒
+            self.tcp_server = None
+            self.tcp_thread = None
             print("TCP server stopped")
+            self.start_tcp_button.setEnabled(True)  # 重新启用按钮
+            self.stop_tcp_button.setEnabled(False)
 
     def add_user(self):
         """添加用户"""
@@ -288,7 +315,7 @@ class IMUPlotter(QMainWindow):
         # 显示文件列表
         self.file_list = QListWidget()
         left_layout.addWidget(self.file_list)
-        self.load_files()  # 确保界面启动时显示已有的文件
+        self.load_files()  # 确保界面启动时显示已有文件
 
         # 删除文件按钮
         self.delete_button = QPushButton("Delete Selected File")
@@ -359,6 +386,34 @@ class IMUPlotter(QMainWindow):
         Breathing_label_layout.addWidget(self.realtime_breathing_label)
         Breathing_label_layout.addWidget(self.average_breathing_label)
         right_layout.addLayout(Breathing_label_layout)
+
+        # 添加呼吸阶段显示标签
+        self.current_phase_label = QLabel("Current Phase: ")
+        self.inspiration_label = QLabel("Inspiration: ")
+        self.expiration_label = QLabel("Expiration: ")
+        self.hold_label = QLabel("Hold: ")
+
+        breathing_layout = QVBoxLayout()
+        breathing_layout.addWidget(self.current_phase_label)
+        breathing_layout.addWidget(self.inspiration_label)
+        breathing_layout.addWidget(self.expiration_label)
+        breathing_layout.addWidget(self.hold_label)
+
+        right_layout.addLayout(breathing_layout)
+
+        # 添加训练模型按钮
+        self.train_model_button = QPushButton("Train Model")
+        self.train_model_button.clicked.connect(self.train_model)
+        right_layout.addWidget(self.train_model_button)
+
+        # 添加加载模型按钮
+        self.load_model_button = QPushButton("Load Model")
+        self.load_model_button.clicked.connect(self.load_model)
+        right_layout.addWidget(self.load_model_button)
+
+        # 添加预测结果显示标签
+        self.prediction_label = QLabel("Prediction: ")
+        right_layout.addWidget(self.prediction_label)
 
         # 设置窗口中心控件
         container = QWidget()
@@ -433,59 +488,92 @@ class IMUPlotter(QMainWindow):
             print("Restarted data collection without filter.")
 
     def start_collecting_data(self):
-        self.stabilized = False
-        self.average_calculated = False
-        self.start_time = time.time()
+        try:
+            # 重置计时器和相关变量
+            self.start_time = time.time()
+            self.data_list = []
+            self.filtered_data_list = []
 
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
-        motion_type = self.motion_type_input.currentText()
-        breathing_type = self.breathing_type_input.currentText()
-        user = self.user_input.currentText()
-        chip = self.chip_input.currentText()
-        sample_rate = self.sample_rate_input.text()
-        filter_order = self.filter_order_input.text()
+            # 获取用户选择的参数
+            user = self.user_input.currentText()
+            chip = self.chip_input.currentText()
+            motion_type = self.motion_type_input.currentText()
+            breathing_type = self.breathing_type_input.currentText()
+            sample_rate = int(self.sample_rate_input.text())
+            filter_order = int(self.filter_order_input.text())
 
-        if self.use_filter:
-            file_name = f"{user}_{chip}_{motion_type}_{breathing_type}_{sample_rate}Hz_FilterOrder{filter_order}_{timestamp}.csv"
-        else:
-            file_name = f"{user}_{chip}_{motion_type}_{breathing_type}_{sample_rate}Hz_raw_data_{timestamp}.csv"
+            # 生成文件名
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            self.file_name = f"{user}_{chip}_{motion_type}_{breathing_type}_{sample_rate}Hz_FilterOrder{filter_order}_{timestamp}.csv"
 
-        self.file_path = f"./data/{file_name}"
+            # 启动数据采集进程
+            self.serial_process = Process(target=read_serial_data, args=(
+                self.serial_port_input.currentText(),
+                115200,
+                self.data_queue,
+                self.filter_taps,
+                self.running_flag,
+                self.file_name,
+                self.use_filter
+            ))
+            self.serial_process.start()
 
-        self.serial_port = self.serial_port_input.currentText()
-        self.running_flag.value = 1
-        #初始化串口进程，如波特率，数据队列，滤波器，运行标志，文件路径，是否使用滤波器
-        self.serial_process = Process(target=read_serial_data, args=(
-            self.serial_port, 115200, self.data_queue, self.filter_taps, self.running_flag, self.file_path,
-            self.use_filter))
-        self.serial_process.start()
-        print(f"Started collecting data: {file_name}")
+            # 更新UI状态
+            self.start_collect_button.setEnabled(False)
+            self.stop_collect_button.setEnabled(True)
+            self.collecting_data = True
 
-        self.start_collect_button.setEnabled(False)
-        self.stop_collect_button.setEnabled(True)
+        except Exception as e:
+            # 发生错误时，显示错误消息并重置状态
+            error_message = f"Error starting data collection: {str(e)}"
+            QMessageBox.critical(self, "Error", error_message)
+            self.reset_collection_state()
+
+        # 添加一个超时检查，确保数据开始流动
+        QTimer.singleShot(5000, self.check_data_flow)
+
+    def check_data_flow(self):
+        if self.collecting_data and self.data_queue.empty():
+            QMessageBox.warning(self, "Warning", "No data received after 5 seconds. Check your connection and try again.")
+            self.stop_collecting_data()
 
     def stop_collecting_data(self):
-        end_time = time.time()
-        sampling_duration = round(end_time - self.start_time, 2)
+        if self.collecting_data:
+            self.running_flag.value = False
+            if self.serial_process:
+                self.serial_process.join(timeout=5)
+                if self.serial_process.is_alive():
+                    self.serial_process.terminate()
+            
+            # 检查是否有数据被收集
+            if self.data_list:
+                self.save_data_to_file()
+                self.load_files()  # 刷新文件列表
+            else:
+                print("No data collected, file not saved.")
 
-        reply = QMessageBox.question(self, 'Save Data',
-                                     f"Sampling duration: {sampling_duration}s. Do you want to save this data?",
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if reply == QMessageBox.Yes:
-            self.running_flag.value = 0
-            self.serial_process.join()
-            print(f"Data collection stopped and data saved. Sampling time: {sampling_duration}s")
-        else:
-            if os.path.exists(self.file_path):
-                os.remove(self.file_path)
-            print("Data collection stopped and data discarded.")
+            self.reset_collection_state()
 
-        self.stabilized = False
-        self.average_calculated = False
-        self.load_files()
-
+    def reset_collection_state(self):
+        # 重置所有相关的状态变量
+        self.start_time = None
+        self.data_list = []
+        self.filtered_data_list = []
+        self.collecting_data = False
+        self.running_flag.value = True
         self.start_collect_button.setEnabled(True)
         self.stop_collect_button.setEnabled(False)
+
+    def save_data_to_file(self):
+        if self.data_list:
+            file_path = os.path.join('data', self.file_name)
+            with open(file_path, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(['Time', 'X_acc', 'Y_acc', 'Z_acc', 'X_gyro', 'Y_gyro', 'Z_gyro'])
+                writer.writerows(self.data_list)
+            print(f"Data saved to {file_path}")
+        else:
+            print("No data to save.")
 
     def update_plot_visibility(self):
         for key in self.checkboxes:
@@ -550,6 +638,44 @@ class IMUPlotter(QMainWindow):
 
         self.update_graph(data)
 
+        z_acc = data[2]  # 获取z轴加速度数据
+        
+        # 将新数据添加到缓冲区
+        self.z_acc_buffer.append(z_acc)
+        
+        # 保持缓冲区大小为500个样本
+        if len(self.z_acc_buffer) > 500:
+            self.z_acc_buffer.pop(0)
+        
+        if len(self.z_acc_buffer) == 500:  # 当缓冲区满时进行处理
+            smoothed_z = preprocess_data(self.z_acc_buffer)
+            phases = detect_breathing_phase(smoothed_z)
+            inspiration, expiration, hold = calculate_phase_percentage(phases)
+            
+            # 确定当前呼吸阶段
+            current_phase = phases[-1]
+            
+            # 更新UI显示当前呼吸阶段和百分比
+            self.update_breathing_phase_display(current_phase, inspiration, expiration, hold)
+            
+            # 通过TCP发送呼吸阶段
+            breathing_signal = "1" if current_phase == "Expiration" else "0"
+            self.send_tcp_data(breathing_signal)
+
+        # 如果模型已加载，进行预测
+        if self.model_loaded and self.ml_processor.svm_classifier is not None:
+            processed_data = process_imu_data(np.array([data]))
+            prediction = self.ml_processor.predict_svm(processed_data)
+            self.prediction_label.setText(f"Prediction: {prediction[0]}")
+        else:
+            self.prediction_label.setText("Prediction: Model not loaded")
+
+    def update_breathing_phase_display(self, current_phase, inspiration, expiration, hold):
+        self.current_phase_label.setText(f"Current Phase: {current_phase}")
+        self.inspiration_label.setText(f"Inspiration: {inspiration:.2%}")
+        self.expiration_label.setText(f"Expiration: {expiration:.2%}")
+        self.hold_label.setText(f"Hold: {hold:.2%}")
+
     def update_graph(self, data):
         keys = ['x_acc', 'y_acc', 'z_acc', 'x_gyro', 'y_gyro', 'z_gyro']
         for i, key in enumerate(keys):
@@ -557,4 +683,75 @@ class IMUPlotter(QMainWindow):
                 self.x_vals[key].append(data[i])
                 x_range = np.arange(len(self.x_vals[key]))
                 self.plots[key].setData(x_range, list(self.x_vals[key]))
+
+    def train_model(self):
+        # 打开文件对话框选择数据文件
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Data File", "", "CSV Files (*.csv)")
+        if not file_path:
+            return
+
+        try:
+            # 加载数据
+            data = np.loadtxt(file_path, delimiter=',')
+            X = data[:, :6]  # 假设前6列是特征
+            y = data[:, -1]  # 假设最后一列是标签
+
+            # 处理数据
+            processed_data = process_imu_data(X)
+
+            # 划分训练集和测试集
+            X_train, X_test, y_train, y_test = train_test_split(processed_data, y, test_size=0.2, random_state=42)
+
+            # 训练SVM模型
+            self.ml_processor.train_svm(X_train, y_train)
+
+            # 评估模型
+            accuracy, report = self.ml_processor.evaluate_model(X_test, y_test, model_type='svm')
+            
+            QMessageBox.information(self, "Training Complete", 
+                                    f"Model trained successfully!\nAccuracy: {accuracy:.2f}\n\nClassification Report:\n{report}")
+            
+            self.model_loaded = True
+
+            # 在训练完成后，添加保存模型的选项
+            reply = QMessageBox.question(self, 'Save Model', 
+                                         "Do you want to save the trained model?",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if reply == QMessageBox.Yes:
+                self.save_model()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred during training: {str(e)}")
+
+    def load_model(self):
+        try:
+            # 打开文件对话框选择模型文件
+            file_path, _ = QFileDialog.getOpenFileName(self, "Select Model File", "", "Joblib Files (*.joblib)")
+            if not file_path:
+                return
+
+            # 加载模型
+            self.ml_processor.svm_classifier = joblib.load(file_path)
+            self.model_loaded = True
+            
+            QMessageBox.information(self, "Model Loaded", f"Model loaded successfully from {file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred while loading the model: {str(e)}")
+            self.model_loaded = False
+
+    def save_model(self):
+        try:
+            # 打开文件对话框选择保存位置
+            file_path, _ = QFileDialog.getSaveFileName(self, "Save Model File", "", "Joblib Files (*.joblib)")
+            if not file_path:
+                return
+
+            # 确保文件名以 .joblib 结尾
+            if not file_path.endswith('.joblib'):
+                file_path += '.joblib'
+
+            # 保存模型
+            joblib.dump(self.ml_processor.svm_classifier, file_path)
+            QMessageBox.information(self, "Model Saved", f"Model saved successfully to {file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred while saving the model: {str(e)}")
     
