@@ -2,6 +2,8 @@ import asyncio
 import os
 import threading
 import time
+import math
+import socket
 
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton, \
@@ -22,9 +24,41 @@ import subprocess
 from ml_processing import MLProcessor, process_imu_data
 from sklearn.model_selection import train_test_split
 
+from PyQt5.QtCore import QThread, pyqtSignal
+
+class TCPServerThread(QThread):
+    client_connected = pyqtSignal(tuple)
+
+    def __init__(self, host, port, parent=None):
+        super().__init__(parent)
+        self.host = host
+        self.port = port
+        self.tcp_server = None
+        self.running = False  # 添加一个标志来跟踪线程的运行状态
+
+    def run(self):
+        self.running = True  # 设置标志为 True
+        self.tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_server.bind((self.host, self.port))
+        self.tcp_server.listen(1)
+        while self.running:
+            try:
+                client, addr = self.tcp_server.accept()
+                self.client_connected.emit((client, addr))
+                self.parent().tcp_clients.append(client)  # 更新 tcp_clients 列表
+            except:
+                break
+
+    def stop(self):
+        self.running = False  # 设置标志为 False
+        if self.tcp_server:
+            self.tcp_server.close()
+
 class IMUPlotter(QMainWindow):
     def __init__(self, data_queue, max_len=1000):
         super().__init__()
+        self.tcp_port = 12242  # 确保这行在 __init__ 方法的开始
+        self.tcp_server_thread = None
         self.serial_process = None
         self.data_queue = data_queue
         self.serial_ports = get_serial_ports()
@@ -53,7 +87,7 @@ class IMUPlotter(QMainWindow):
         self.plots = {}
 
         # 设置窗口标题和图标
-        self.setWindowTitle("IMU Data Plotter")
+        self.setWindowTitle("IMU Data Analysis")
         self.setWindowIcon(QIcon('path_to_your_icon.png'))  # 替换为你的图标路径
 
         # 设置窗口大小
@@ -72,91 +106,44 @@ class IMUPlotter(QMainWindow):
         self.refresh_timer.timeout.connect(self.refresh_serial_ports)
         self.refresh_timer.start(5000)
 
-        self.tcp_server = None
-        self.tcp_clients = []
-        self.tcp_thread = None
-
         self.z_acc_buffer = []
 
         self.ml_processor = MLProcessor()
         self.model_loaded = False
 
-    def start_tcp_server(self, host='0.0.0.0', port=12242):
-        self.stop_tcp_server()  # 确保旧的服务器被关闭
-        self.tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            self.tcp_server.bind((host, port))
-            self.tcp_server.listen(5)
-            print(f"TCP server listening on {host}:{port}")
-            self.tcp_thread = threading.Thread(target=self.accept_connections, daemon=True)
-            self.tcp_thread.start()
-            self.start_tcp_button.setEnabled(False)  # 禁用按钮
-            self.stop_tcp_button.setEnabled(True)
-        except Exception as e:
-            print(f"Error starting TCP server: {e}")
-            self.tcp_server.close()
-            self.tcp_server = None
+        self.test_thread = None
+        self.test_running = False
 
-        # 启动更新定时器
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.update_plot)
-        self.update_timer.start(10)  # 每10毫秒更新一次
+    def start_tcp_server(self):
+        if not self.tcp_server_thread:
+            self.tcp_server_thread = TCPServerThread('0.0.0.0', self.tcp_port, self)
+            self.tcp_server_thread.client_connected.connect(self.handle_client_connection)
+            self.tcp_server_thread.start()
+            self.start_tcp_button.setText("Stop TCP Server")
+            print(f"TCP server started on port {self.tcp_port}")
+        else:
+            self.stop_tcp_server()
 
-    def accept_connections(self):
-        while self.tcp_server:
-            try:
-                client, addr = self.tcp_server.accept()
-                self.tcp_clients.append(client)
-                threading.Thread(target=self.handle_client, args=(client,), daemon=True).start()
-            except OSError as e:
-                print(f"Error accepting connection: {e}")
-                if self.tcp_server is None or self.tcp_server._closed:
-                    print("TCP server is closed. Exiting accept_connections loop.")
-                    break
-            except Exception as e:
-                print(f"Unexpected error in accept_connections: {e}")
-                break
+    def stop_tcp_server(self):
+        if self.tcp_server_thread:
+            self.tcp_server_thread.stop()
+            self.tcp_server_thread.wait()
+            self.tcp_server_thread = None
+            self.start_tcp_button.setText("Start TCP Server")
+            print("TCP server stopped")
 
-    def handle_client(self, client):
-        while True:
-            try:
-                data = client.recv(1024).decode().strip()
-                if not data:
-                    break
-                # 解析接收到的数据
-                values = list(map(float, data.split(',')))
-                if len(values) == 6:
-                    self.data_queue.put(values)
-            except ConnectionResetError:
-                print("Connection reset by peer.")
-                break
-            except Exception as e:
-                print(f"Unexpected error in handle_client: {e}")
-                break
-        client.close()
-        self.tcp_clients.remove(client)
+    def handle_client_connection(self, client_info):
+        client, addr = client_info
+        print(f"Connected by {addr}")
+        # 处理客户端连接的代码
 
     def send_tcp_data(self, data):
         for client in self.tcp_clients:
             try:
-                client.send(data.encode())
-            except:
+                client.sendall(data.encode())
+            except Exception as e:
+                print(f"Failed to send data to client: {e}")
                 self.tcp_clients.remove(client)
-
-    def stop_tcp_server(self):
-        if self.tcp_server:
-            self.tcp_server.close()
-            for client in self.tcp_clients:
-                client.close()
-            self.tcp_clients.clear()
-            if self.tcp_thread:
-                self.tcp_thread.join(timeout=5)  # 等待线程结束，最多等待5秒
-            self.tcp_server = None
-            self.tcp_thread = None
-            print("TCP server stopped")
-            self.start_tcp_button.setEnabled(True)  # 重新启用按钮
-            self.stop_tcp_button.setEnabled(False)
 
     def add_user(self):
         """添加用户"""
@@ -323,7 +310,7 @@ class IMUPlotter(QMainWindow):
         left_layout.addWidget(self.delete_button)
 
 
-        # 应用FIR滤波器设置按钮
+        # 用FIR滤波器设置按钮
         self.apply_filter_button = QPushButton("Apply FIR Filter")
         self.apply_filter_button.clicked.connect(self.apply_filter_order)
         filter_button_layout.addWidget(self.apply_filter_button)
@@ -350,7 +337,7 @@ class IMUPlotter(QMainWindow):
         tcp_button_layout = QHBoxLayout()
 
         self.start_tcp_button = QPushButton("Start TCP Server")
-        self.start_tcp_button.clicked.connect(lambda: self.start_tcp_server())
+        self.start_tcp_button.clicked.connect(self.start_tcp_server)
         tcp_button_layout.addWidget(self.start_tcp_button)
 
         self.stop_tcp_button = QPushButton("Stop TCP Server")
@@ -414,6 +401,11 @@ class IMUPlotter(QMainWindow):
         # 添加预测结果显示标签
         self.prediction_label = QLabel("Prediction: ")
         right_layout.addWidget(self.prediction_label)
+
+        # 添加测试按钮
+        self.test_button = QPushButton("Test Deep Breathing")
+        self.test_button.clicked.connect(self.start_test_signal)
+        left_layout.addWidget(self.test_button)
 
         # 设置窗口中心控件
         container = QWidget()
@@ -578,7 +570,7 @@ class IMUPlotter(QMainWindow):
     def update_plot_visibility(self):
         for key in self.checkboxes:
             if self.checkboxes[key].isChecked():
-                self.plots[key].setVisible            
+                self.plots[key].setVisible(True)
             else:
                 self.plots[key].setVisible(False)
                 self.x_vals[key].clear()
@@ -754,4 +746,48 @@ class IMUPlotter(QMainWindow):
             QMessageBox.information(self, "Model Saved", f"Model saved successfully to {file_path}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"An error occurred while saving the model: {str(e)}")
+
+    def start_test_signal(self):
+        print("start_test_signal method called")  # 调试信息
+        if not self.tcp_server_thread or not self.tcp_server_thread.running:
+            QMessageBox.warning(self, "Warning", "Please start the TCP server first.")
+            return
+
+        if not self.test_running:
+            self.test_running = True
+            self.test_thread = threading.Thread(target=self.generate_test_signal)
+            self.test_thread.start()
+            self.test_button.setText("Stop Test")
+            print("Test signal generation started")  # 调试信息
+        else:
+            self.test_running = False
+            if self.test_thread:
+                self.test_thread.join()
+            self.test_button.setText("Test Deep Breathing")
+            print("Test signal generation stopped")  # 调试信息
+
+    def generate_test_signal(self):
+        print("generate_test_signal method called")  # 调试信息
+        if not self.tcp_server_thread or not self.tcp_server_thread.running:
+            self.test_running = False
+            self.test_button.setText("Test Deep Breathing")
+            print("generate_test_signal method finished")  # 调试信息
+            return
+
+        try:
+            t = 0
+            while self.test_running:
+                z_acc = int(32767 * math.sin(2 * math.pi * 0.2 * t))
+                data = [0, 0, z_acc, 0, 0, 0]
+                self.data_queue.put(data)  # 将数据放入队列
+                print(f"Generated data: {data}")
+                time.sleep(0.01)
+                t += 0.01
+
+        except Exception as e:
+            print(f"Error in test signal generation: {e}")
+        finally:
+            self.test_running = False
+            self.test_button.setText("Test Deep Breathing")
+            print("generate_test_signal method finished")
     

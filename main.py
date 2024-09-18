@@ -4,6 +4,7 @@ from multiprocessing import Queue, Value
 from data_processing import design_fir_filter
 from serial_reader import read_serial_data
 from imuPloter import IMUPlotter
+import threading
 
 
 if __name__ == '__main__':
